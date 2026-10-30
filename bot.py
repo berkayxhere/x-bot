@@ -49,6 +49,7 @@ async def process_cycle(tweet_ids):
             success_ids.append(tid)
         await asyncio.sleep(3)
 
+    # 15 dakika (900 saniye) bekle ve RT'leri geri cek
     await asyncio.sleep(900)
 
     for tid in success_ids:
@@ -92,26 +93,40 @@ async def publish_list(context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global pool_active
-    if update.effective_chat.id != CHAT_ID or not pool_active:
+    if not update.message or update.effective_chat.id != CHAT_ID:
         return
-    text = update.message.text or ""
-    match = TWITTER_REGEX.search(text)
-    user = update.effective_user
-    if match:
-        tweet_id = match.group(1)
-        tweet_link = match.group(0)
-        x_account = tweet_link.split("/")[3]
-        tg_name = f"@{user.username}" if user.username else user.first_name
-        if user.id not in current_round_links:
-            current_round_links[user.id] = {"username": tg_name, "links": []}
-        user_links = current_round_links[user.id]["links"]
-        if not any(item["tweet_id"] == tweet_id for item in user_links):
-            user_links.append({"tweet_id": tweet_id, "x_account": x_account, "url": tweet_link})
-    else:
+
+    # Havuz kapaliyken atilan tum mesajlari aninda sil
+    if not pool_active:
         try:
             await update.message.delete()
         except Exception:
             pass
+        return
+
+    text = update.message.text or ""
+    match = TWITTER_REGEX.search(text)
+    user = update.effective_user
+
+    # Havuz acikken tweet linki degilse yine sil
+    if not match:
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        return
+
+    # Gecerli tweet linki ise kaydet
+    tweet_id = match.group(1)
+    tweet_link = match.group(0)
+    x_account = tweet_link.split("/")[3]
+    tg_name = f"@{user.username}" if user.username else user.first_name
+
+    if user.id not in current_round_links:
+        current_round_links[user.id] = {"username": tg_name, "links": []}
+    user_links = current_round_links[user.id]["links"]
+    if not any(item["tweet_id"] == tweet_id for item in user_links):
+        user_links.append({"tweet_id": tweet_id, "x_account": x_account, "url": tweet_link})
 
 async def setup_jobs(app):
     jq = app.job_queue
@@ -127,12 +142,27 @@ async def home(request):
 
 app_web = Starlette(routes=[Route("/", home)])
 
+async def keep_alive():
+    """Render Free planin uykuya dalmasini engellemek icin kendi portuna istek atar."""
+    port = int(os.environ.get("PORT", 8080))
+    url = f"http://127.0.0.1:{port}/"
+    await asyncio.sleep(10)
+    async with httpx.AsyncClient() as client:
+        while True:
+            try:
+                await client.get(url, timeout=5)
+            except Exception:
+                pass
+            await asyncio.sleep(600)  # 10 dakikada bir ping at
+
 async def run_all():
     tg_app = ApplicationBuilder().token(TOKEN).post_init(setup_jobs).build()
-    tg_app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    tg_app.add_handler(MessageHandler(filters.ALL, handle_message))
     await tg_app.initialize()
     await tg_app.start()
     await tg_app.updater.start_polling()
+
+    asyncio.create_task(keep_alive())
 
     port = int(os.environ.get("PORT", 8080))
     config = uvicorn.Config(app_web, host="0.0.0.0", port=port, log_level="info")
