@@ -1,6 +1,11 @@
+import os
 import re
 import asyncio
 import httpx
+from starlette.applications import Starlette
+from starlette.responses import PlainTextResponse
+from starlette.routing import Route
+import uvicorn
 from telegram import ChatPermissions, Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
@@ -14,7 +19,7 @@ current_round_links = {}
 TWITTER_REGEX = re.compile(r"https?://(?:www\.)?(?:twitter\.com|x\.com)/[A-Za-z0-9_]+/status/(\d+)")
 
 HEADERS = {
-    "authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA",
+    "authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA",
     "x-csrf-token": X_CT0,
     "x-twitter-active-user": "yes",
     "x-twitter-auth-type": "OAuth2Session",
@@ -47,7 +52,7 @@ async def process_cycle(tweet_ids):
     await asyncio.sleep(900)
 
     for tid in success_ids:
-        await x_action(tid, "unrt"):
+        await x_action(tid, "unrt")
         await asyncio.sleep(3)
 
 async def open_pool(context: ContextTypes.DEFAULT_TYPE):
@@ -56,7 +61,7 @@ async def open_pool(context: ContextTypes.DEFAULT_TYPE):
     current_round_links = {}
     perms = ChatPermissions(can_send_messages=True)
     await context.bot.set_chat_permissions(chat_id=CHAT_ID, permissions=perms)
-    msg = await context.bot.send_message(chat_id=CHAT_ID, text="?? **HAVUZ ACILDI (xx:30 - xx:35)**\n\nTweet linklerinizi paylasin. 35 gece kilitlenecektir!", parse_mode="Markdown")
+    msg = await context.bot.send_message(chat_id=CHAT_ID, text="🟢 **HAVUZ ACILDI (xx:30 - xx:35)**\n\nTweet linklerinizi paylasin. 35 gece kilitlenecektir!", parse_mode="Markdown")
     await context.bot.pin_chat_message(chat_id=CHAT_ID, message_id=msg.message_id)
 
 async def close_pool(context: ContextTypes.DEFAULT_TYPE):
@@ -65,7 +70,7 @@ async def close_pool(context: ContextTypes.DEFAULT_TYPE):
     perms = ChatPermissions(can_send_messages=False)
     await context.bot.set_chat_permissions(chat_id=CHAT_ID, permissions=perms)
     total_links = sum(len(item["links"]) for item in current_round_links.values())
-    await context.bot.send_message(chat_id=CHAT_ID, text=f"?? **HAVUZ KAPANDI (xx:35)**\n\nToplam {total_links} tweet toplandi.", parse_mode="Markdown")
+    await context.bot.send_message(chat_id=CHAT_ID, text=f"🔒 **HAVUZ KAPANDI (xx:35)**\n\nToplam {total_links} tweet toplandi.", parse_mode="Markdown")
 
 async def publish_list(context: ContextTypes.DEFAULT_TYPE):
     tweet_ids = []
@@ -78,10 +83,10 @@ async def publish_list(context: ContextTypes.DEFAULT_TYPE):
             tweet_ids.append(item["tweet_id"])
     if not all_links:
         return
-    text = "?? **RT & BEGENI DALGASI BASLADI (xx:40)**\n\n"
+    text = "🚀 **RT & BEGENI DALGASI BASLADI (xx:40)**\n\n"
     for i, (x_acc, tg_u, url, user_link_idx, total_u_links) in enumerate(all_links, 1):
         text += f"{i}. @{x_acc} gonderisi (Paylasan: {tg_u} - {user_link_idx}/{total_u_links})\n{url}\n\n"
-    text += "?? *Not: RT'ler 15 dakika sonra otomatik geri cekilecektir.*"
+    text += "⚠️ *Not: RT'ler 15 dakika sonra otomatik geri cekilecektir.*"
     await context.bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="Markdown", disable_web_page_preview=True)
     asyncio.create_task(process_cycle(tweet_ids))
 
@@ -117,11 +122,22 @@ async def setup_jobs(app):
         jq.run_daily(close_pool, time=datetime.time(hour=h, minute=35, tzinfo=tz))
         jq.run_daily(publish_list, time=datetime.time(hour=h, minute=40, tzinfo=tz))
 
-def main():
-    app = ApplicationBuilder().token(TOKEN).post_init(setup_jobs).build()
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    print("Sistem hazir, saat basi donguler devrede...")
-    app.run_polling()
+async def home(request):
+    return PlainTextResponse("Bot calisiyor!")
+
+app_web = Starlette(routes=[Route("/", home)])
+
+async def run_all():
+    tg_app = ApplicationBuilder().token(TOKEN).post_init(setup_jobs).build()
+    tg_app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    await tg_app.initialize()
+    await tg_app.start()
+    await tg_app.updater.start_polling()
+
+    port = int(os.environ.get("PORT", 8080))
+    config = uvicorn.Config(app_web, host="0.0.0.0", port=port, log_level="info")
+    server = uvicorn.Server(config)
+    await server.serve()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(run_all())
